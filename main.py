@@ -1,6 +1,10 @@
 import os
 import sys
 import json 
+import io
+from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 # Locate active conda prefix dynamically
 conda_prefix = os.environ.get("CONDA_PREFIX", sys.prefix)
@@ -358,3 +362,83 @@ async def get_merged_topo(payload: dict):
         raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server Processing Error: {str(e)}")
+
+@app.get("/api/download/surface")
+async def download_surface(trimmed: bool = Query(True), format: str = Query("obj")):
+    if not CACHE["raw_points"] or not CACHE["triangles"]:
+        raise HTTPException(status_code=400, detail="No topo data available to export. Generate topo first.")
+
+    pts = CACHE["raw_points"]
+    triangles = CACHE["triangles"]
+    
+    # Calculate centroid to offset geometry to origin (matching Three.js space)
+    cx = float(sum(p["x"] for p in pts) / len(pts))
+    cy = float(sum(p["y"] for p in pts) / len(pts))
+    min_z = float(min(p["z"] for p in pts))
+
+    output = []
+    output.append("# LA County 3D Topo Surface Mesh Export\n")
+
+    # Filter points/vertices if trimmed
+    vertex_map = {}
+    valid_pts = []
+    
+    for idx, p in enumerate(pts):
+        if trimmed and not p["inside"]:
+            continue
+        new_idx = len(valid_pts) + 1
+        vertex_map[idx] = new_idx
+        valid_pts.append(p)
+        # Export in local feet centered coordinates
+        x_local = p["x"] - cx
+        y_local = p["z"] - min_z
+        z_local = -(p["y"] - cy)
+        output.append(f"v {x_local:.4f} {y_local:.4f} {z_local:.4f}\n")
+
+    # Export face indices
+    for t in triangles:
+        if trimmed and not t["inside"]:
+            continue
+        i1, i2, i3 = t["indices"]
+        if i1 in vertex_map and i2 in vertex_map and i3 in vertex_map:
+            output.append(f"f {vertex_map[i1]} {vertex_map[i2]} {vertex_map[i3]}\n")
+
+    content = "".join(output)
+    filename = f"topo_surface_{'trimmed' if trimmed else 'untrimmed'}.obj"
+
+    return Response(
+        content=content,
+        media_type="application/text",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@app.get("/api/download/points")
+async def download_points(trimmed: bool = Query(False), format: str = Query("dxf")):
+    if not CACHE["raw_points"]:
+        raise HTTPException(status_code=400, detail="No point cloud data available to export.")
+
+    pts = CACHE["raw_points"]
+
+    output = []
+    # Simple ASCII DXF Section Header for Points
+    output.append("0\nSECTION\n2\nHEADER\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n")
+
+    for p in pts:
+        if trimmed and not p["inside"]:
+            continue
+        output.append("0\nPOINT\n8\nTOPOGRAPHY\n")
+        output.append(f"10\n{p['x']:.4f}\n")
+        output.append(f"20\n{p['y']:.4f}\n")
+        output.append(f"30\n{p['z']:.4f}\n")
+
+    output.append("0\nENDSEC\n0\nEOF\n")
+
+    content = "".join(output)
+    filename = f"topo_points_{'trimmed' if trimmed else 'untrimmed'}.dxf"
+
+    return Response(
+        content=content,
+        media_type="application/dxf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
