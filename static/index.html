@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>LA County 3D Topo Surface</title>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: sans-serif; background: #121212; color: white; }
+    #ui { position: absolute; top: 15px; left: 15px; z-index: 100; background: rgba(0,0,0,0.8); padding: 15px; border-radius: 8px; }
+    input, button { padding: 8px 12px; margin-top: 5px; border-radius: 4px; border: none; }
+    button { background: #2e7d32; color: white; cursor: pointer; }
+    #canvas-container { width: 100vw; height: 100vh; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/d3-delaunay@6"></script>
+</head>
+<body>
+
+<div id="ui">
+  <h3>LA County 3D Surface Generator</h3>
+  <label>APNs (comma separated):</label><br>
+  <input type="text" id="apnInput" value="4321002009" style="width: 250px;"><br><br>
+  <button onclick="fetchAndRender()">Generate 3D Topo</button>
+  <p id="status"></p>
+</div>
+
+<div id="canvas-container"></div>
+
+<script>
+  let scene, camera, renderer, controls, currentMesh;
+
+  function init() {
+    const container = document.getElementById('canvas-container');
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1a1a);
+
+    camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, -100, 100);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    container.appendChild(renderer.domElement);
+
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+
+    const sun = new THREE.DirectionalLight(0xffffff, 1);
+    sun.position.set(50, 50, 100);
+    scene.add(sun);
+    scene.add(new THREE.AmbientLight(0x404040));
+
+    animate();
+  }
+
+  async function fetchAndRender() {
+    const status = document.getElementById('status');
+    const apns = document.getElementById('apnInput').value.split(',').map(s => s.trim());
+    status.innerText = "Querying LA County GIS & USGS LiDAR...";
+
+    try {
+      const response = await fetch('/api/get-merged-topo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apns: apns, buffer_feet: 20 })
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail);
+
+      status.innerText = `Fetched ${data.point_count} LiDAR points. Triangulating...`;
+      renderSurface(data.points);
+      status.innerText = "Surface generated successfully!";
+    } catch (err) {
+      status.innerText = "Error: " + err.message;
+    }
+  }
+
+  function renderSurface(points) {
+    if (currentMesh) scene.remove(currentMesh);
+
+    const coords = new Float64Array(points.length * 2);
+    points.forEach((p, i) => {
+      coords[i * 2] = p.x;
+      coords[i * 2 + 1] = p.y;
+    });
+
+    // Client-side Delaunay Triangulation
+    const delaunay = new d3.Delaunay(coords);
+    const triangles = delaunay.triangles;
+
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(points.length * 3);
+
+    // Normalize coordinates to center view
+    const cx = points.reduce((a, p) => a + p.x, 0) / points.length;
+    const cy = points.reduce((a, p) => a + p.y, 0) / points.length;
+    const cz = points.reduce((a, p) => a + p.z, 0) / points.length;
+
+    points.forEach((p, i) => {
+      positions[i * 3] = (p.x - cx) * 100000; // Scale geographic degrees to visual space
+      positions[i * 3 + 1] = (p.y - cy) * 100000;
+      positions[i * 3 + 2] = (p.z - cz) * 0.5; // Z elevation scale
+    });
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setIndex(Array.from(triangles));
+    geometry.computeVertexNormals();
+
+    const material = new THREE.MeshPhongMaterial({
+      color: 0x3a5a40,
+      wireframe: false,
+      side: THREE.DoubleSide,
+      flatShading: true
+    });
+
+    currentMesh = new THREE.Mesh(geometry, material);
+    scene.add(currentMesh);
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+
+  init();
+</script>
+</body>
+</html>
