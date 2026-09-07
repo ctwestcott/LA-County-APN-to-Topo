@@ -26,7 +26,6 @@
     .info-card div { margin-bottom: 4px; }
     .info-card strong { color: #007bff; }
     
-    /* View mode bar */
     #view-mode-bar {
       position: absolute; top: 20px; right: 20px; z-index: 10;
       background: rgba(0, 0, 0, 0.85); border: 1px solid #444;
@@ -38,7 +37,6 @@
     }
     .view-btn.active { background: #007bff; border-color: #007bff; font-weight: bold; }
     
-    /* Graphic Scale Bar */
     #scale-container {
       position: absolute; bottom: 20px; right: 20px; z-index: 10;
       background: rgba(0, 0, 0, 0.75); border: 1px solid #555;
@@ -49,7 +47,6 @@
       height: 6px; background: #fff; border: 1px solid #000; margin: 4px auto;
     }
 
-    /* 2D Line Table Schedule Overlay */
     #schedule-table-container {
       position: absolute; top: 70px; right: 20px; z-index: 10;
       background: rgba(0, 0, 0, 0.88); border: 1px solid #444;
@@ -61,7 +58,6 @@
     table.sched-table th, table.sched-table td { padding: 4px 6px; border-bottom: 1px solid #333; }
     table.sched-table th { background: #222; color: #aaa; font-weight: normal; }
 
-    /* Per Edge Setbacks Grid */
     .edge-setback-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -88,19 +84,16 @@
 </head>
 <body>
 
-  <!-- View Mode Switcher -->
   <div id="view-mode-bar">
     <button class="view-btn active" id="btn3D" onclick="setViewMode('3d')">3D View</button>
     <button class="view-btn" id="btn2D" onclick="setViewMode('2d')">2D Site Plan</button>
   </div>
 
-  <!-- Dynamic Graphic Scale Bar -->
   <div id="scale-container">
     <div id="scale-label">0  50 ft</div>
     <div id="scale-bar" style="width: 100px;"></div>
   </div>
 
-  <!-- 2D Property Line Schedule Table -->
   <div id="schedule-table-container">
     <h4>Property Line Schedule</h4>
     <table class="sched-table">
@@ -127,16 +120,14 @@
       <option value="3.28084">Meters to Feet (1 unit = 1 meter)</option>
     </select>
 
-    <button onclick="generateTopo()">Generate Topo</button>
+    <button id="generateBtn" onclick="generateTopo()">Generate Topo</button>
     <div id="status"></div>
 
-    <!-- Zoning & Area Info Panel -->
     <div class="section" id="zoning-panel" style="display:none;">
       <label><strong>Lot & Zoning Info:</strong></label>
       <div id="zoning-content"></div>
     </div>
 
-    <!-- Display Layer Controls -->
     <div class="section" id="layer-controls" style="display:none;">
       <label><strong>Display Layer Mode:</strong></label>
       <select id="viewMode" onchange="updateDisplay()">
@@ -148,6 +139,10 @@
       <div class="row">
         <span>Trim to Property Line:</span>
         <input type="checkbox" id="trimToggle" onchange="updateDisplay()" checked>
+      </div>
+      <div class="row">
+        <span>Include DSM Buildings (Class 6):</span>
+        <input type="checkbox" id="dsmToggle" onchange="updateDisplay()">
       </div>
       <div class="row">
         <span>Wireframe Mesh:</span>
@@ -168,7 +163,6 @@
       </div>
     </div>
 
-    <!-- Site Annotations Controls -->
     <div class="section" id="annotation-controls" style="display:none;">
       <label><strong>Site Annotations:</strong></label>
       <div class="row">
@@ -185,7 +179,6 @@
       </div>
     </div>
 
-    <!-- Individual Per-Edge Setbacks Overlay -->
     <div class="section" id="setback-controls" style="display:none;">
       <label><strong>Individual Edge Setbacks Overlay:</strong></label>
       <div class="row">
@@ -204,11 +197,9 @@
 
       <label style="margin-top: 8px;">Individual Edge Setback (ft):</label>
       <div id="edgeSetbackList" class="edge-setback-grid">
-        <!-- Populated dynamically per boundary edge -->
       </div>
     </div>
 
-    <!-- CAD Export Options -->
     <div class="section" id="export-controls" style="display:none;">
       <label><strong>Export CAD Files:</strong></label>
       <button class="btn-exp" onclick="exportData('points', false)">Untrimmed Points (.dxf)</button>
@@ -222,9 +213,9 @@
     let scene, camera, renderer, controls;
     let globalPoints = [], globalTriangles = [], globalBoundary = [], globalContours = {}, globalOffset = {};
     let orderedEdges = [];
-    let edgeSetbackValues = []; // Stores individual setback per edge index
+    let edgeSetbackValues = [];
     let currentViewMode = '3d';
-    let unitScaleFactor = 1.0; // GIS unit conversion factor to feet
+    let unitScaleFactor = 1.0;
 
     function init() {
       scene = new THREE.Scene();
@@ -335,10 +326,9 @@
       return sprite;
     }
 
-    // Convert edge vector into civil bearing representation (e.g. N 45°12' E)
     function calculateBearing(p1, p2) {
       const dx = (p2.x - p1.x) * unitScaleFactor;
-      const dz = (p2.z - p1.z) * unitScaleFactor; // -Z is North
+      const dz = (p2.z - p1.z) * unitScaleFactor;
       const dist = Math.hypot(dx, dz);
       if (dist < 1e-4) return { bearingStr: "N 00°00' E", lengthFt: 0 };
 
@@ -359,7 +349,6 @@
       return { bearingStr, lengthFt: dist };
     }
 
-    // Compute planar 2D footprint area using Shoelace formula
     function calculatePolygonArea2D(pts) {
       if (!pts || pts.length < 3) return 0;
       let area = 0;
@@ -426,7 +415,6 @@
 
       let pts = mergeColinearEdges(ring, 15.0);
 
-      // Ensure Clockwise orientation in XZ plane
       let area = 0;
       for (let i = 0; i < pts.length; i++) {
         const j = (i + 1) % pts.length;
@@ -434,7 +422,6 @@
       }
       if (area > 0) pts.reverse();
 
-      // Northernmost point (minimum Z)
       let northIdx = 0, minZ = Infinity;
       for (let i = 0; i < pts.length; i++) {
         if (pts[i].z < minZ) {
@@ -455,7 +442,6 @@
       schedBody.innerHTML = "";
       edgeListUI.innerHTML = "";
 
-      // Initialize default setback values (20' front/rear, 5' side or 15')
       if (edgeSetbackValues.length !== reordered.length) {
         edgeSetbackValues = reordered.map((_, i) => (i === 0 ? 20 : (i === 2 ? 15 : 5)));
       }
@@ -477,7 +463,6 @@
           lengthFt: bearingInfo.lengthFt
         });
 
-        // Populate 2D Schedule Table
         schedBody.innerHTML += `
           <tr>
             <td><strong>E${edgeNum}</strong></td>
@@ -486,7 +471,6 @@
           </tr>
         `;
 
-        // Populate Per-Edge Setback Controls
         edgeListUI.innerHTML += `
           <div class="edge-setback-item">
             <span><strong>Edge ${edgeNum}:</strong> (${lenStr}')</span>
@@ -497,7 +481,6 @@
 
       orderedEdges = edges;
 
-      // Update Area display
       const areaSqFt = calculatePolygonArea2D(reordered);
       const areaAcres = (areaSqFt / 43560.0).toFixed(3);
 
@@ -638,12 +621,93 @@
       }
     }
 
+    async function pollJobStatus(jobId) {
+      const status = document.getElementById("status");
+      const btn = document.getElementById("generateBtn");
+
+      try {
+        const res = await fetch(`/api/jobs/${jobId}`);
+        const job = await res.json();
+
+        if (job.status === "processing" || job.status === "pending") {
+          status.innerText = job.message || "Processing spatial tiles...";
+          setTimeout(() => pollJobStatus(jobId), 2000);
+        } else if (job.status === "completed") {
+          btn.disabled = false;
+          const payload = job.result;
+
+          globalPoints = payload.points || [];
+          globalTriangles = payload.triangles || [];
+          globalBoundary = payload.boundary || [];
+          globalContours = payload.contours || {};
+          globalOffset = payload.center_offset || {};
+
+          if (globalBoundary && globalBoundary.length > 0 && globalBoundary[0].length > 2) {
+            const ring = globalBoundary[0];
+            const rawDx = Math.abs(ring[1].x - ring[0].x);
+            const rawDz = Math.abs(ring[1].z - ring[0].z);
+            const rawLen = Math.hypot(rawDx, rawDz);
+
+            if (rawLen > 0 && rawLen < 35) {
+              unitScaleFactor = 3.28084;
+              document.getElementById("unitScaleSelect").value = "3.28084";
+            }
+          }
+
+          if (globalBoundary && globalBoundary.length > 0) {
+            processBoundaryEdges(globalBoundary[0]);
+          }
+
+          if (payload.zoning_info && payload.zoning_info.length > 0) {
+            const zBox = document.getElementById("zoning-content");
+            const areaSqFt = calculatePolygonArea2D(orderedEdges.map(e => e.p1));
+            const areaAcres = (areaSqFt / 43560.0).toFixed(3);
+
+            zBox.innerHTML = `
+              <div class="info-card" style="border-color: #007bff;">
+                <div><strong>Calculated Site Area:</strong> ${areaSqFt.toLocaleString('en-US', {maximumFractionDigits: 0})} sq ft (${areaAcres} acres)</div>
+              </div>
+            `;
+            payload.zoning_info.forEach(info => {
+              zBox.innerHTML += `
+                <div class="info-card">
+                  <div><strong>AIN/APN:</strong> ${info.apn}</div>
+                  <div><strong>Address:</strong> ${info.situs_address}</div>
+                  <div><strong>Zoning Code:</strong> ${info.zoning_code}</div>
+                  <div><strong>Zoning Desc:</strong> ${info.zoning_description}</div>
+                  <div><strong>Land Use:</strong> ${info.use_description}</div>
+                </div>
+              `;
+            });
+            document.getElementById("zoning-panel").style.display = "block";
+          }
+
+          document.getElementById("layer-controls").style.display = "block";
+          document.getElementById("annotation-controls").style.display = "block";
+          document.getElementById("setback-controls").style.display = "block";
+          document.getElementById("export-controls").style.display = "block";
+
+          updateDisplay();
+          updateScaleBar();
+          status.innerText = `Loaded ${globalPoints.length} points, TIN surface, & contours.`;
+        } else if (job.status === "failed") {
+          btn.disabled = false;
+          status.innerText = "Error: " + (job.error || "Processing failed on backend.");
+        }
+      } catch (err) {
+        btn.disabled = false;
+        status.innerText = "Polling error: " + err.message;
+      }
+    }
+
     async function generateTopo() {
       const apnRaw = document.getElementById("apnInput").value;
       const apns = apnRaw.split(",").map(s => s.trim()).filter(s => s.length > 0);
       const status = document.getElementById("status");
+      const btn = document.getElementById("generateBtn");
 
-      status.innerText = "Querying GIS & processing TIN surface mesh...";
+      status.innerText = "Submitting processing job...";
+      btn.disabled = true;
 
       try {
         const res = await fetch("/api/get-merged-topo", {
@@ -652,79 +716,16 @@
           body: JSON.stringify({ apns: apns, buffer_feet: 25.0 })
         });
 
-        const text = await res.text();
-        let data;
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Failed to start processing job.");
 
-        try {
-          data = JSON.parse(text);
-        } catch (e) {
-          throw new Error(text || `Server returned HTTP ${res.status}`);
-        }
-
-        if (!res.ok) throw new Error(data.detail || "Server error");
-
-        globalPoints = data.points;
-        globalTriangles = data.triangles;
-        globalBoundary = data.boundary;
-        globalContours = data.contours;
-        globalOffset = data.center_offset;
-
-        // Auto-detect unit scale if boundary dimensions are small
-        if (globalBoundary && globalBoundary.length > 0 && globalBoundary[0].length > 2) {
-          const ring = globalBoundary[0];
-          const rawDx = Math.abs(ring[1].x - ring[0].x);
-          const rawDz = Math.abs(ring[1].z - ring[0].z);
-          const rawLen = Math.hypot(rawDx, rawDz);
-
-          // If raw coordinates are in meters, auto-adjust to Feet
-          if (rawLen > 0 && rawLen < 35) {
-            unitScaleFactor = 3.28084;
-            document.getElementById("unitScaleSelect").value = "3.28084";
-          }
-        }
-
-        if (globalBoundary && globalBoundary.length > 0) {
-          processBoundaryEdges(globalBoundary[0]);
-        }
-
-        if (data.zoning_info && data.zoning_info.length > 0) {
-          const zBox = document.getElementById("zoning-content");
-          const areaSqFt = calculatePolygonArea2D(orderedEdges.map(e => e.p1));
-          const areaAcres = (areaSqFt / 43560.0).toFixed(3);
-
-          zBox.innerHTML = `
-            <div class="info-card" style="border-color: #007bff;">
-              <div><strong>Calculated Site Area:</strong> ${areaSqFt.toLocaleString('en-US', {maximumFractionDigits: 0})} sq ft (${areaAcres} acres)</div>
-            </div>
-          `;
-          data.zoning_info.forEach(info => {
-            zBox.innerHTML += `
-              <div class="info-card">
-                <div><strong>AIN/APN:</strong> ${info.apn}</div>
-                <div><strong>Address:</strong> ${info.situs_address}</div>
-                <div><strong>Zoning Code:</strong> ${info.zoning_code}</div>
-                <div><strong>Zoning Desc:</strong> ${info.zoning_description}</div>
-                <div><strong>Land Use:</strong> ${info.use_description}</div>
-              </div>
-            `;
-          });
-          document.getElementById("zoning-panel").style.display = "block";
-        }
-
-        document.getElementById("layer-controls").style.display = "block";
-        document.getElementById("annotation-controls").style.display = "block";
-        document.getElementById("setback-controls").style.display = "block";
-        document.getElementById("export-controls").style.display = "block";
-
-        updateDisplay();
-        updateScaleBar();
-        status.innerText = `Loaded ${data.point_count} points, TIN surface, & contours.`;
+        pollJobStatus(data.job_id);
       } catch (err) {
+        btn.disabled = false;
         status.innerText = "Error: " + err.message;
       }
     }
 
-    // Computes inward parallel offsets for each edge using individual setback values
     function computeSetbackOffsetRing() {
       if (!orderedEdges || orderedEdges.length < 3) return [];
 
@@ -741,11 +742,9 @@
         const len = Math.hypot(dx, dz);
         if (len < 1e-6) continue;
 
-        // Inward normal vector
         const nx = dz / len;
         const nz = -dx / len;
 
-        // Convert setback feet back into internal Three.js unit distance
         const setbackFt = edgeSetbackValues[i] !== undefined ? edgeSetbackValues[i] : 5.0;
         const distUnits = setbackFt / unitScaleFactor;
 
@@ -786,6 +785,7 @@
     function updateDisplay() {
       const viewMode = document.getElementById("viewMode").value;
       const trim = document.getElementById("trimToggle").checked;
+      const includeDSM = document.getElementById("dsmToggle") ? document.getElementById("dsmToggle").checked : false;
       const wireframe = document.getElementById("wireframeToggle").checked;
       const showContours = document.getElementById("contourToggle").checked;
       const contourInterval = document.getElementById("contourInterval").value;
@@ -803,9 +803,12 @@
         }
       });
 
-      const filteredPoints = trim ? globalPoints.filter(p => p.inside) : globalPoints;
+      const filteredPoints = globalPoints.filter(p => {
+        if (trim && !p.inside) return false;
+        if (!includeDSM && p.cls === 6) return false;
+        return true;
+      });
 
-      // 1. Mesh Surface
       if (viewMode === "surface" || viewMode === "both") {
         const mGeo = new THREE.BufferGeometry();
         const vertPos = new Float32Array(globalPoints.length * 3);
@@ -819,6 +822,10 @@
         const indices = [];
         globalTriangles.forEach(t => {
           if (trim && !t.inside) return;
+          const p1 = globalPoints[t.indices[0]];
+          const p2 = globalPoints[t.indices[1]];
+          const p3 = globalPoints[t.indices[2]];
+          if (!includeDSM && (p1.cls === 6 || p2.cls === 6 || p3.cls === 6)) return;
           indices.push(t.indices[0], t.indices[1], t.indices[2]);
         });
 
@@ -838,7 +845,6 @@
         scene.add(surfaceMesh);
       }
 
-      // 2. Property Boundary Lines & Edge Labels
       const annotationGroup = new THREE.Group();
       annotationGroup.name = "annotationGroup";
 
@@ -873,11 +879,9 @@
         scene.add(lineGroup);
       }
 
-      // 3. Max & Min Elevation Callouts
-      if (showElevCallouts && globalPoints && globalPoints.length > 0) {
-        let maxP = globalPoints[0], minP = globalPoints[0];
-        globalPoints.forEach(p => {
-          if (trim && !p.inside) return;
+      if (showElevCallouts && filteredPoints && filteredPoints.length > 0) {
+        let maxP = filteredPoints[0], minP = filteredPoints[0];
+        filteredPoints.forEach(p => {
           if (p.y > maxP.y) maxP = p;
           if (p.y < minP.y) minP = p;
         });
@@ -900,12 +904,10 @@
 
       scene.add(annotationGroup);
 
-      // 4. North Arrow
       if (showNorth) {
         scene.add(buildNorthArrow());
       }
 
-      // 5. Individual Edge Setbacks
       if (showSetbacks && orderedEdges && orderedEdges.length > 0) {
         const setbackGroup = new THREE.Group();
         setbackGroup.name = "setbackLine";
@@ -925,7 +927,6 @@
         scene.add(setbackGroup);
       }
 
-      // 6. Point Cloud
       if (viewMode === "points" || viewMode === "both") {
         const pGeo = new THREE.BufferGeometry();
         const positions = new Float32Array(filteredPoints.length * 3);
@@ -936,9 +937,15 @@
           positions[i * 3 + 1] = (currentViewMode === '2d') ? 0.0 : p.y;
           positions[i * 3 + 2] = p.z;
 
-          colors[i * 3]     = p.inside ? 0.0 : 0.4;
-          colors[i * 3 + 1] = p.inside ? 1.0 : 0.4;
-          colors[i * 3 + 2] = p.inside ? 0.4 : 0.4;
+          if (p.cls === 6) {
+            colors[i * 3]     = 1.0;
+            colors[i * 3 + 1] = 0.2;
+            colors[i * 3 + 2] = 0.2;
+          } else {
+            colors[i * 3]     = p.inside ? 0.0 : 0.4;
+            colors[i * 3 + 1] = p.inside ? 1.0 : 0.4;
+            colors[i * 3 + 2] = p.inside ? 0.4 : 0.4;
+          }
         });
 
         pGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -950,7 +957,6 @@
         scene.add(pCloud);
       }
 
-      // 7. Contours
       if (showContours && globalContours && globalContours[contourInterval]) {
         const contourGroup = new THREE.Group();
         contourGroup.name = "contourLines";
