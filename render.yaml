@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: sample-fullstack-app
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: sample-db
+          property: connectionString
+
+databases:
+  - name: sample-db
+    plan: free
