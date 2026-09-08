@@ -5,11 +5,56 @@ import json
 import uuid
 import io
 import requests
+import concurrent.futures
+
+import os
+import sys
+import threading
+import uvicorn
+import webview
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+
+app = FastAPI()
+
+def get_resource_path(relative_path: str) -> str:
+    """Get absolute path to resource, works for dev and for PyInstaller."""
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_index():
+    html_path = get_resource_path("index.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+# Add your existing API routes here (/api/get-merged-topo, /api/jobs/{job_id}, etc.)
+
+def run_server():
+    """Start FastAPI server on a local port without logging."""
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="error")
+
+if __name__ == "__main__":
+    # Start the FastAPI backend server in a background thread
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    server_thread.start()
+
+    # Create native desktop window pointing to the local FastAPI server
+    webview.create_window(
+        title="LA County 3D Topo & Site Plan Generator",
+        url="http://127.0.0.1:8000",
+        width=1280,
+        height=800,
+        resizable=True
+    )
+
+    # Start the desktop GUI loop
+    webview.start()
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
 
 # Locate active conda prefix dynamically
 conda_prefix = os.environ.get("CONDA_PREFIX", sys.prefix)
@@ -29,8 +74,8 @@ pyproj.datadir.set_data_dir(proj_dir)
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from shapely.geometry import box, shape, Point, Polygon
-from shapely.ops import unary_union, split, transform
+from shapely.geometry import box, shape, Point, Polygon, MultiPolygon, LineString, MultiLineString
+from shapely.ops import unary_union, transform
 from shapely.vectorized import contains
 import pdal
 from scipy.spatial import Delaunay
@@ -42,7 +87,13 @@ from xml.etree import ElementTree as ET
 import xml.dom.minidom as minidom
 
 app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Process pool executor for offloading heavy Delaunay/TIN computations off FastAPI event loop
+executor = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+
+# Ensure static directory exists before mounting
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
 LA_COUNTY_PARCEL_URL = "https://public.gis.lacounty.gov/public/rest/services/LACounty_Cache/LACounty_Parcel/MapServer/0/query"
 LA_COUNTY_ZONING_URL = "https://public.gis.lacounty.gov/public/rest/services/LACounty_Cache/LACounty_Parcel/MapServer/1/query"
@@ -126,8 +177,6 @@ def adaptive_process_points(pts, lot_area_sqft=None, min_spacing=1.0):
         downsampled.append(best_pt)
 
     return downsampled
-
-from shapely.geometry import Polygon, MultiPolygon
 
 def precalculate_tin(pts, boundary_geom, site_acreage):
     """
@@ -298,12 +347,9 @@ def calculate_contours_vectorized(coords, triangles, interval=5.0):
 
     return contours
 
-from shapely.geometry import LineString, MultiLineString
-
 def clip_contours_to_boundary(contours, boundary_geom):
     """
-    Clips individual contour line segments exactly to the boundary polygon,
-    eliminating jagged edge overhangs on large sites.
+    Clips individual contour line segments exactly to the boundary polygon.
     """
     if not boundary_geom or not contours:
         return contours
@@ -320,7 +366,6 @@ def clip_contours_to_boundary(contours, boundary_geom):
             p2 = seg["pts"][1]
             line = LineString([(p1["x"], p1["y"]), (p2["x"], p2["y"])])
 
-            # Rapid spatial intersection check against property boundary
             intersection = line.intersection(boundary_geom)
 
             if intersection.is_empty:
@@ -468,7 +513,6 @@ async def execute_topo_processing(job_id: str, apns: list, buffer_feet: float):
             except Exception:
                 continue
 
-            # Yield event loop every tile iteration
             await asyncio.sleep(0)
 
         raw_pts = list(voxel_dict.values())
@@ -487,12 +531,15 @@ async def execute_topo_processing(job_id: str, apns: list, buffer_feet: float):
             b_coords.append([{"x": float(c[0]), "y": float(c[1])} for c in coords_list])
         CACHE["boundary_coords"] = b_coords
 
-        # 2. Compute TIN Mesh Topology with vectorized perimeter clipping
+        # 2. Compute TIN Mesh Topology off the main event loop
         jobs[job_id]["triangulation_progress"] = 50
         jobs[job_id]["message"] = "Building clipped Delaunay spatial TIN mesh..."
         await asyncio.sleep(0)
 
-        coords_arr, final_triangles, pts = precalculate_tin(pts, merged_boundary_2229, site_acreage)
+        loop = asyncio.get_running_loop()
+        coords_arr, final_triangles, pts = await loop.run_in_executor(
+            executor, precalculate_tin, pts, merged_boundary_2229, site_acreage
+        )
 
         CACHE["raw_points"] = pts
         CACHE["triangles"] = final_triangles
@@ -506,7 +553,7 @@ async def execute_topo_processing(job_id: str, apns: list, buffer_feet: float):
         contours_5ft = calculate_contours_vectorized(coords_arr, final_triangles, interval=5.0)
         contours_10ft = calculate_contours_vectorized(coords_arr, final_triangles, interval=10.0)
 
-        # --- OPTION A: Clip contour line segments flush to the property boundary ---
+        # Clip contour lines to property boundary line
         contours_1ft = clip_contours_to_boundary(contours_1ft, merged_boundary_2229)
         contours_5ft = clip_contours_to_boundary(contours_5ft, merged_boundary_2229)
         contours_10ft = clip_contours_to_boundary(contours_10ft, merged_boundary_2229)
@@ -569,7 +616,9 @@ async def execute_topo_processing(job_id: str, apns: list, buffer_feet: float):
 
 @app.get("/")
 async def serve_index():
-    return FileResponse("static/index.html")
+    if os.path.exists("static/index.html"):
+        return FileResponse("static/index.html")
+    return Response(content="<h1>LA County 3D Topo Server Running</h1>", media_type="text/html")
 
 
 @app.post("/api/get-merged-topo")
@@ -606,73 +655,28 @@ async def get_job_status(job_id: str):
     )
 
 
+# --- UPDATED CIVIL ENGINEERING & SURVEYING DOWNLOAD ROUTES ---
+
 @app.get("/api/download/surface")
-async def download_surface(trimmed: bool = Query(True), format: str = Query("obj")):
+async def download_surface(trimmed: bool = Query(True), format: str = Query("landxml")):
+    """
+    Exports 3D TIN surfaces in industry-standard civil formats (LandXML, HEC-RAS GeoTIFF, DXF, OBJ).
+    """
     if not CACHE["raw_points"] or not CACHE["triangles"]:
-        raise HTTPException(status_code=400, detail="No topo data available to export. Generate topo first.")
+        raise HTTPException(status_code=400, detail="No surface data available. Generate topo first.")
 
     pts = CACHE["raw_points"]
     triangles = CACHE["triangles"]
     fmt = format.lower().strip()
 
-    if fmt == "obj":
-        cx = float(sum(p["x"] for p in pts) / len(pts))
-        cy = float(sum(p["y"] for p in pts) / len(pts))
-        min_z = float(min(p["z"] for p in pts))
-
-        output = ["# LA County 3D Topo Surface Mesh Export\n"]
-        vertex_map = {}
-        valid_pts = []
-        
-        for idx, p in enumerate(pts):
-            if trimmed and not p["inside"]:
-                continue
-            new_idx = len(valid_pts) + 1
-            vertex_map[idx] = new_idx
-            valid_pts.append(p)
-
-            x_local = p["x"] - cx
-            y_local = p["z"] - min_z
-            z_local = -(p["y"] - cy)
-            output.append(f"v {x_local:.4f} {y_local:.4f} {z_local:.4f}\n")
-
-        for t in triangles:
-            if trimmed and not t["inside"]:
-                continue
-            i1, i2, i3 = t["indices"]
-            if i1 in vertex_map and i2 in vertex_map and i3 in vertex_map:
-                output.append(f"f {vertex_map[i1]} {vertex_map[i2]} {vertex_map[i3]}\n")
-
-        content = "".join(output)
-        filename = f"topo_surface_{'trimmed' if trimmed else 'untrimmed'}.obj"
-        return Response(content=content, media_type="application/text", headers={"Content-Disposition": f"attachment; filename={filename}"})
-
-    elif fmt == "dxf":
-        doc = ezdxf.new(dxfversion="R2000")
-        msp = doc.modelspace()
-        
-        for t in triangles:
-            if trimmed and not t["inside"]:
-                continue
-            i1, i2, i3 = t["indices"]
-            p1, p2, p3 = pts[i1], pts[i2], pts[i3]
-            msp.add_3dface([
-                (p1["x"], p1["y"], p1["z"]),
-                (p2["x"], p2["y"], p2["z"]),
-                (p3["x"], p3["y"], p3["z"]),
-                (p3["x"], p3["y"], p3["z"])
-            ])
-
-        out_stream = io.StringIO()
-        doc.write(out_stream)
-        content = out_stream.getvalue()
-        filename = f"topo_surface_{'trimmed' if trimmed else 'untrimmed'}.dxf"
-        return Response(content=content, media_type="application/dxf", headers={"Content-Disposition": f"attachment; filename={filename}"})
-
-    elif fmt in ["xml", "landxml"]:
-        landxml = ET.Element('LandXML', {'version': '1.2', 'xmlns': 'http://www.landxml.org/schema/LandXML-1.2'})
+    # 1. LandXML (.xml) — Civil 3D, MicroStation, Carlson, OpenRoads
+    if fmt in ["landxml", "xml"]:
+        landxml = ET.Element('LandXML', {
+            'version': '1.2',
+            'xmlns': 'http://www.landxml.org/schema/LandXML-1.2'
+        })
         surfaces = ET.SubElement(landxml, 'Surfaces')
-        surface = ET.SubElement(surfaces, 'Surface', {'name': 'Site_TIN_Surface'})
+        surface = ET.SubElement(surfaces, 'Surface', {'name': 'LiDAR_TIN_Surface'})
         definition = ET.SubElement(surface, 'Definition', {'surfType': 'TIN'})
         pnts = ET.SubElement(definition, 'Pnts')
 
@@ -682,6 +686,7 @@ async def download_surface(trimmed: bool = Query(True), format: str = Query("obj
             if trimmed and not p["inside"]:
                 continue
             vertex_map[idx] = valid_idx
+            # LandXML standard point ordering: Northing (Y), Easting (X), Elevation (Z)
             p_elem = ET.SubElement(pnts, 'P', {'id': str(valid_idx)})
             p_elem.text = f"{p['y']:.4f} {p['x']:.4f} {p['z']:.4f}"
             valid_idx += 1
@@ -696,19 +701,20 @@ async def download_surface(trimmed: bool = Query(True), format: str = Query("obj
                 f_elem.text = f"{vertex_map[i1]} {vertex_map[i2]} {vertex_map[i3]}"
 
         xml_str = minidom.parseString(ET.tostring(landxml)).toprettyxml(indent="  ")
-        filename = f"topo_surface_{'trimmed' if trimmed else 'untrimmed'}.xml"
+        filename = f"topo_surface_{'trimmed' if trimmed else 'full'}.xml"
         return Response(content=xml_str, media_type="application/xml", headers={"Content-Disposition": f"attachment; filename={filename}"})
 
-    elif fmt in ["tif", "geotiff"]:
+    # 2. HEC-RAS / GIS DEM GeoTIFF (.tif) — HEC-RAS RAS Mapper, QGIS, ArcGIS
+    elif fmt in ["geotiff", "tif", "hec-ras", "hecras"]:
         valid_pts = [p for p in pts if (p["inside"] if trimmed else True)]
         if not valid_pts:
-            raise HTTPException(status_code=400, detail="No points available within the specified bounds.")
+            raise HTTPException(status_code=400, detail="No valid points within export bounds.")
 
         coords_arr = np.array([[p["x"], p["y"], p["z"]] for p in valid_pts])
         x_min, x_max = coords_arr[:, 0].min(), coords_arr[:, 0].max()
         y_min, y_max = coords_arr[:, 1].min(), coords_arr[:, 1].max()
 
-        resolution = 1.0
+        resolution = 1.0  # 1-foot grid cell size
         width = max(1, int(np.ceil((x_max - x_min) / resolution)))
         height = max(1, int(np.ceil((y_max - y_min) / resolution)))
 
@@ -724,21 +730,138 @@ async def download_surface(trimmed: bool = Query(True), format: str = Query("obj
         with rasterio.open(
             memfile, 'w', driver='GTiff',
             height=height, width=width, count=1,
-            dtype=rasterio.float32, crs="EPSG:2229",
+            dtype=rasterio.float32, crs="EPSG:2229",  # CA State Plane Zone 5 (US Feet)
             transform=transform_gtif, nodata=-9999
         ) as dst:
             dst.write(np.nan_to_num(grid_z, nan=-9999).astype(np.float32), 1)
 
         memfile.seek(0)
-        filename = f"topo_surface_{'trimmed' if trimmed else 'untrimmed'}.tif"
+        filename = f"hecras_dtm_{'trimmed' if trimmed else 'full'}.tif"
         return StreamingResponse(memfile, media_type="image/tiff", headers={"Content-Disposition": f"attachment; filename={filename}"})
 
+    # 3. 3D DXF Face Mesh (.dxf) — AutoCAD, MicroStation
+    elif fmt == "dxf":
+        doc = ezdxf.new(dxfversion="R2000")
+        msp = doc.modelspace()
+
+        for t in triangles:
+            if trimmed and not t["inside"]:
+                continue
+            p1, p2, p3 = pts[t["indices"][0]], pts[t["indices"][1]], pts[t["indices"][2]]
+            msp.add_3dface([
+                (p1["x"], p1["y"], p1["z"]),
+                (p2["x"], p2["y"], p2["z"]),
+                (p3["x"], p3["y"], p3["z"]),
+                (p3["x"], p3["y"], p3["z"])
+            ])
+
+        out_stream = io.StringIO()
+        doc.write(out_stream)
+        filename = f"topo_mesh_{'trimmed' if trimmed else 'full'}.dxf"
+        return Response(content=out_stream.getvalue(), media_type="application/dxf", headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+    # 4. Wavefront OBJ (.obj) — Blender, Rhino, 3ds Max
+    elif fmt == "obj":
+        cx = float(sum(p["x"] for p in pts) / len(pts))
+        cy = float(sum(p["y"] for p in pts) / len(pts))
+        min_z = float(min(p["z"] for p in pts))
+
+        output = ["# 3D Topo Surface Mesh\n"]
+        vertex_map = {}
+        valid_pts = []
+
+        for idx, p in enumerate(pts):
+            if trimmed and not p["inside"]:
+                continue
+            vertex_map[idx] = len(valid_pts) + 1
+            valid_pts.append(p)
+            output.append(f"v {p['x'] - cx:.4f} {p['z'] - min_z:.4f} {-(p['y'] - cy):.4f}\n")
+
+        for t in triangles:
+            if trimmed and not t["inside"]:
+                continue
+            i1, i2, i3 = t["indices"]
+            if i1 in vertex_map and i2 in vertex_map and i3 in vertex_map:
+                output.append(f"f {vertex_map[i1]} {vertex_map[i2]} {vertex_map[i3]}\n")
+
+        filename = f"topo_mesh_{'trimmed' if trimmed else 'full'}.obj"
+        return Response(content="".join(output), media_type="text/plain", headers={"Content-Disposition": f"attachment; filename={filename}"})
+
     else:
-        raise HTTPException(status_code=400, detail=f"Unsupported surface export format: {format}")
+        raise HTTPException(status_code=400, detail=f"Unsupported surface format: {format}")
+
+
+@app.get("/api/download/contours")
+async def download_contours(interval: float = Query(1.0), format: str = Query("dxf")):
+    """
+    Exports 3D elevation contours to DXF polylines or GIS GeoJSON vectors.
+    """
+    if not CACHE["raw_points"] or not CACHE["triangles"]:
+        raise HTTPException(status_code=400, detail="No surface data available. Generate topo first.")
+
+    coords_arr = np.array([[p["x"], p["y"], p["z"]] for p in CACHE["raw_points"]], dtype=np.float64)
+    contours = calculate_contours_vectorized(coords_arr, CACHE["triangles"], interval=interval)
+    
+    if CACHE.get("boundary_2229"):
+        contours = clip_contours_to_boundary(contours, CACHE["boundary_2229"])
+
+    fmt = format.lower().strip()
+
+    # 1. 3D Contour DXF PolyLines (.dxf) — AutoCAD, Civil 3D
+    if fmt == "dxf":
+        doc = ezdxf.new(dxfversion="R2000")
+        msp = doc.modelspace()
+
+        for c_group in contours:
+            elev = c_group["elevation"]
+            is_index = c_group["is_index"]
+            layer_name = "C-TOPO-INDEX" if is_index else "C-TOPO-INTER"
+            color = 1 if is_index else 2  # Red for index, Yellow for intermediate
+
+            for seg in c_group["segments"]:
+                p1, p2 = seg["pts"][0], seg["pts"][1]
+                msp.add_polyline3d(
+                    [(p1["x"], p1["y"], elev), (p2["x"], p2["y"], elev)],
+                    dxfattribs={"layer": layer_name, "color": color}
+                )
+
+        out_stream = io.StringIO()
+        doc.write(out_stream)
+        filename = f"contours_{interval}ft.dxf"
+        return Response(content=out_stream.getvalue(), media_type="application/dxf", headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+    # 2. GIS GeoJSON LineStrings (.geojson) — QGIS, ArcGIS Pro
+    elif fmt in ["geojson", "json"]:
+        features = []
+        for c_group in contours:
+            elev = c_group["elevation"]
+            for seg in c_group["segments"]:
+                p1, p2 = seg["pts"][0], seg["pts"][1]
+                features.append({
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": [[p1["x"], p1["y"], elev], [p2["x"], p2["y"], elev]]
+                    },
+                    "properties": {
+                        "ELEVATION": elev,
+                        "IS_INDEX": c_group["is_index"]
+                    }
+                })
+
+        geojson_payload = {"type": "FeatureCollection", "features": features}
+        filename = f"contours_{interval}ft.geojson"
+        return Response(content=json.dumps(geojson_payload), media_type="application/json", headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported contour format: {format}")
 
 
 @app.get("/api/download/points")
 async def download_points(trimmed: bool = Query(False), format: str = Query("dxf")):
+    """
+    Exports point cloud data to DXF points or CSV point lists.
+    """
     if not CACHE["raw_points"]:
         raise HTTPException(status_code=400, detail="No point cloud data available to export.")
 
