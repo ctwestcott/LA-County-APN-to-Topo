@@ -201,11 +201,38 @@
     </div>
 
     <div class="section" id="export-controls" style="display:none;">
-      <label><strong>Export CAD Files:</strong></label>
-      <button class="btn-exp" onclick="exportData('points', false)">Untrimmed Points (.dxf)</button>
-      <button class="btn-exp" onclick="exportData('points', true)">Trimmed Points (.dxf)</button>
-      <button class="btn-exp" onclick="exportData('surface', false)">Untrimmed Surface (.obj)</button>
-      <button class="btn-exp" onclick="exportData('surface', true)">Trimmed Surface (.obj)</button>
+      <label><strong>Export CAD & GIS Files:</strong></label>
+      
+      <label>Surface / Mesh Export:</label>
+      <select id="exportSurfaceFormat">
+        <option value="landxml">LandXML (.xml) — Civil 3D / OpenRoads</option>
+        <option value="hecras">HEC-RAS Terrain GeoTIFF (.tif)</option>
+        <option value="dxf">AutoCAD 3D Mesh (.dxf)</option>
+        <option value="obj" selected>Wavefront 3D Object (.obj)</option>
+      </select>
+      <div class="row">
+        <span>Trim Mesh to Boundary:</span>
+        <input type="checkbox" id="exportSurfaceTrim" checked>
+      </div>
+      <button class="btn-exp" onclick="exportSurfaceData()">Export Surface Model</button>
+
+      <label style="margin-top: 10px;">Contour Vectors Export:</label>
+      <select id="exportContourFormat">
+        <option value="dxf" selected>AutoCAD 3D Contours (.dxf)</option>
+        <option value="geojson">GIS Contour Vectors (.geojson)</option>
+      </select>
+      <button class="btn-exp" onclick="exportContourData()">Export Contour Lines</button>
+
+      <label style="margin-top: 10px;">Survey Points Export:</label>
+      <select id="exportPointFormat">
+        <option value="dxf" selected>AutoCAD 3D Points (.dxf)</option>
+        <option value="csv">CSV PNEZD Point File (.csv)</option>
+      </select>
+      <div class="row">
+        <span>Trim Points to Boundary:</span>
+        <input type="checkbox" id="exportPointTrim" checked>
+      </div>
+      <button class="btn-exp" onclick="exportPointData()">Export Survey Points</button>
     </div>
   </div>
 
@@ -993,12 +1020,22 @@
       }
     }
 
-    function exportData(type, trimmed) {
-      if (type === 'points') {
-        window.location.href = `/api/download/points?trimmed=${trimmed}&format=dxf`;
-      } else {
-        window.location.href = `/api/download/surface?trimmed=${trimmed}&format=obj`;
-      }
+    function exportSurfaceData() {
+      const format = document.getElementById('exportSurfaceFormat').value;
+      const trimmed = document.getElementById('exportSurfaceTrim').checked;
+      window.location.href = `/api/download/surface?trimmed=${trimmed}&format=${format}`;
+    }
+
+    function exportContourData() {
+      const format = document.getElementById('exportContourFormat').value;
+      const interval = document.getElementById('contourInterval').value;
+      window.location.href = `/api/download/contours?interval=${interval}&format=${format}`;
+    }
+
+    function exportPointData() {
+      const format = document.getElementById('exportPointFormat').value;
+      const trimmed = document.getElementById('exportPointTrim').checked;
+      window.location.href = `/api/download/points?trimmed=${trimmed}&format=${format}`;
     }
 
     window.onload = init;
