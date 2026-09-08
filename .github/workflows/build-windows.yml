@@ -29,7 +29,7 @@ jobs:
 
       - name: Build Executable with PyInstaller
         run: |
-          pyinstaller --noconfirm --onedir --windowed --collect-all pythonnet --collect-all clr_loader --collect-all webview --collect-all uvicorn --collect-all fastapi --add-data "index.html;." main.py
+          pyinstaller --noconfirm --onedir --windowed --collect-all webview --collect-all uvicorn --collect-all fastapi --add-data "static/index.html;static" main.py
 
       - name: Zip Build Output
         run: |
