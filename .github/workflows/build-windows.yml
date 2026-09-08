@@ -29,7 +29,7 @@ jobs:
 
       - name: Build Executable with PyInstaller
         run: |
-          pyinstaller --noconfirm --onedir --windowed --add-data "index.html;." main.py
+          pyinstaller --noconfirm --onedir --windowed --add-data "./static/index.html;." main.py
 
       - name: Zip Build Output
         run: |
