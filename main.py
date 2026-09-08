@@ -12,6 +12,12 @@ import sys
 import threading
 import uvicorn
 import webview
+
+# ... your FastAPI server thread startup ...
+
+if __name__ == '__main__':
+    webview.create_window('LA County 3D Topo', 'http://127.0.0.1:8000')
+    webview.start(gui='edgechromium')
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 

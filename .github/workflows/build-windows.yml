@@ -30,7 +30,6 @@ jobs:
       - name: Build Executable with PyInstaller
         run: |
           pyinstaller --noconfirm --onedir --windowed --collect-all webview --collect-all uvicorn --collect-all fastapi --add-data "static/index.html;static" main.py
-
       - name: Zip Build Output
         run: |
           Compress-Archive -Path "dist/main/*" -DestinationPath "dist/LA-County-3D-Topo-Windows.zip"
